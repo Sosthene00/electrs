@@ -256,6 +256,15 @@ impl DBStore {
             .collect()
     }
 
+    pub(crate) fn read_tweaks(&self) -> Vec<Row> {
+        let mut opts = rocksdb::ReadOptions::default();
+        opts.fill_cache(false);
+        self.db
+            .iterator_cf_opt(self.tweak_cf(), opts, rocksdb::IteratorMode::Start)
+            .map(|row| row.expect("header iterator failed").0) // extract key from row
+            .collect()
+    }
+
     pub(crate) fn get_tip(&self) -> Option<Vec<u8>> {
         self.db
             .get_cf(self.headers_cf(), TIP_KEY)

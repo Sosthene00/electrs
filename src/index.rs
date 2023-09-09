@@ -162,6 +162,43 @@ impl Index {
         Ok(result)
     }
 
+    pub(crate) fn get_tweaks_alone(&self, height: usize) -> impl Iterator<Item = PublicKey> + '_ {
+        self.store
+            .read_tweaks()
+            .into_iter()
+            .filter(move |t| {
+                let tweak_height = TweakRow::from_db_row(&t).height;
+                tweak_height >= height as u32
+            })
+            .map(|row| {
+                let tweak = TweakRow::from_db_row(&row).tweak_data;
+                PublicKey::from_slice(&tweak).unwrap()
+            })
+    }
+
+    pub(crate) fn get_tweaks(&self, block_hash: BlockHash) -> impl Iterator<Item = PublicKey> + '_ {
+        if let Some(begin_block) = self.store
+            .read_headers()
+            .into_iter()
+            .find(|row| {
+                let header_row = HeaderRow::from_db_row(&row);
+                header_row.header.block_hash() == block_hash
+            }) 
+            {
+                let tweak_vec: Vec<u8> = HeaderRow::from_db_row(&begin_block).sp_tweaks;
+                let pub_keys: Vec<PublicKey> = tweak_vec.chunks(33)
+                    .filter_map(|chunk| PublicKey::from_slice(chunk).ok())
+                    .collect();
+
+                pub_keys.into_iter()
+            }
+        else {
+            let empty_pubkeys: Vec<PublicKey> = vec![];
+
+            empty_pubkeys.into_iter()
+        }
+    }
+
     pub(crate) fn filter_by_txid(&self, txid: Txid) -> impl Iterator<Item = BlockHash> + '_ {
         self.store
             .iter_txid(TxidRow::scan_prefix(txid))
