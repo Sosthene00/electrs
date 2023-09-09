@@ -187,13 +187,14 @@ impl TxidRow {
 #[derive(Debug, Serialize, Deserialize)]
 pub(crate) struct HeaderRow {
     pub(crate) header: BlockHeader,
+    pub(crate) sp_tweaks: Vec<u8>
 }
 
-impl_consensus_encoding!(HeaderRow, header);
+impl_consensus_encoding!(HeaderRow, header, sp_tweaks);
 
 impl HeaderRow {
-    pub(crate) fn new(header: BlockHeader) -> Self {
-        Self { header }
+    pub(crate) fn new(header: BlockHeader, sp_tweaks: Vec<u8>) -> Self {
+        Self { header, sp_tweaks }
     }
 
     pub(crate) fn to_db_row(&self) -> db::Row {

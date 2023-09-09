@@ -305,6 +305,7 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
     let mut spending_rows = Vec::with_capacity(block.txdata.iter().map(|tx| tx.input.len()).sum());
     let mut txid_rows = Vec::with_capacity(block.txdata.len());
     let mut tweak_rows = Vec::new();
+    let mut sp_tweaks = Vec::new();
 
     for tx in &block.txdata {
         txid_rows.push(TxidRow::row(tx.txid(), height));
@@ -358,12 +359,13 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
 
         // and now add it to the batch
         tweak_rows.push(TweakRow::new(tweak_data.serialize(), height));
+        sp_tweaks.extend_from_slice(&tweak_data.serialize());
     }
     IndexResult {
         funding_rows,
         spending_rows,
         txid_rows,
-        header_row: HeaderRow::new(block.header),
+        header_row: HeaderRow::new(block.header, sp_tweaks),
         tweak_rows,
     }
 }
