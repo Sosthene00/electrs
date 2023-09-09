@@ -1,4 +1,6 @@
 use anyhow::Result;
+use bitcoin::BlockHash;
+use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 
 use std::convert::TryFrom;
 
@@ -37,6 +39,34 @@ macro_rules! impl_consensus_encoding {
         }
     );
 }
+
+pub(crate) struct TweakRow {
+    pub tweak_data: [u8; PUBLIC_KEY_SIZE],
+    pub height: Height,
+}
+
+impl TweakRow {
+    pub(crate) fn new(tweak_data: [u8;PUBLIC_KEY_SIZE], height: usize) -> Self {
+        Self {
+            tweak_data,
+            height: Height::try_from(height).expect("invalid height"),
+        }
+    }
+
+    pub(crate) fn to_db_row(&self) -> db::Row {
+        serialize(self).into_boxed_slice()
+    }
+
+    pub(crate) fn from_db_row(row: &[u8]) -> Self {
+        deserialize(row).expect("bad TweakRow")
+    }
+
+    pub fn height(&self) -> usize {
+        usize::try_from(self.height).expect("invalid height")
+    }
+}
+
+impl_consensus_encoding!(TweakRow, tweak_data, height);
 
 const HASH_PREFIX_LEN: usize = 8;
 

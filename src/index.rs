@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
+use std::io::Write;
 use bitcoin::consensus::{deserialize, serialize};
+use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Block, BlockHash, OutPoint, Txid};
+use bitcoin::secp256k1::{Secp256k1, PublicKey, Scalar};
 
 use crate::{
     chain::{Chain, NewHeader},
@@ -8,7 +11,7 @@ use crate::{
     db::{DBStore, Row, WriteBatch},
     metrics::{self, Gauge, Histogram, Metrics},
     signals::ExitFlag,
-    types::{HashPrefixRow, HeaderRow, ScriptHash, ScriptHashRow, SpendingPrefixRow, TxidRow},
+    types::{HashPrefixRow, HeaderRow, ScriptHash, ScriptHashRow, SpendingPrefixRow, TxidRow, TweakRow},
 };
 
 #[derive(Clone)]
@@ -78,6 +81,7 @@ struct IndexResult {
     funding_rows: Vec<HashPrefixRow>,
     spending_rows: Vec<HashPrefixRow>,
     txid_rows: Vec<HashPrefixRow>,
+    tweak_rows: Vec<TweakRow>,
 }
 
 impl IndexResult {
@@ -93,6 +97,10 @@ impl IndexResult {
 
         batch.header_rows.push(self.header_row.to_db_row());
         batch.tip_row = serialize(&self.header_row.header.block_hash()).into_boxed_slice();
+
+        let tweak_rows = self.tweak_rows.iter().map(TweakRow::to_db_row);
+        batch.tweak_rows.extend(tweak_rows);
+
     }
 }
 
@@ -251,10 +259,52 @@ fn db_rows_size(rows: &[Row]) -> usize {
     rows.iter().map(|key| key.len()).sum()
 }
 
+pub fn get_A_sum_public_keys(input: &Vec<PublicKey>) -> PublicKey {
+    let keys_refs: &Vec<&PublicKey> = &input.iter().collect();
+
+    PublicKey::combine_keys(keys_refs).unwrap()
+}
+
+pub fn calculate_tweak_data(
+    input_pub_keys: &Vec<PublicKey>,
+    outpoints: &Vec<OutPoint>,
+) -> PublicKey {
+    let secp = Secp256k1::new();
+    let a_sum = get_A_sum_public_keys(input_pub_keys);
+    let outpoints_hash = hash_outpoints(outpoints);
+
+    a_sum.mul_tweak(&secp, &outpoints_hash).unwrap()
+}
+
+pub fn hash_outpoints(sending_data: &Vec<OutPoint>) -> Scalar {
+    let mut outpoints: Vec<Vec<u8>> = vec![];
+
+    for outpoint in sending_data {
+        let txid = outpoint.txid;
+        let vout = outpoint.vout;
+
+        let mut bytes: Vec<u8> = Vec::new();
+        bytes.extend_from_slice(txid.as_byte_array());
+        bytes.reverse();
+        bytes.extend_from_slice(&vout.to_le_bytes());
+        outpoints.push(bytes);
+    }
+    outpoints.sort();
+
+    let mut engine = sha256::HashEngine::default();
+
+    for v in outpoints {
+        engine.write_all(&v).unwrap();
+    }
+
+    Scalar::from_be_bytes(sha256::Hash::from_engine(engine).to_byte_array()).unwrap()
+}
+
 fn index_single_block(block: Block, height: usize) -> IndexResult {
     let mut funding_rows = Vec::with_capacity(block.txdata.iter().map(|tx| tx.output.len()).sum());
     let mut spending_rows = Vec::with_capacity(block.txdata.iter().map(|tx| tx.input.len()).sum());
     let mut txid_rows = Vec::with_capacity(block.txdata.len());
+    let mut tweak_rows = Vec::new();
 
     for tx in &block.txdata {
         txid_rows.push(TxidRow::row(tx.txid(), height));
@@ -277,11 +327,43 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
                 .iter()
                 .map(|txin| SpendingPrefixRow::row(txin.previous_output, height)),
         );
+
+        // From here it only concerns silent payment
+        if !tx.output.iter().any(|o| o.script_pubkey.is_v1_p2tr()) {
+            continue // This transaction can't contain silent payment outputs
+        }
+
+        // Do we have at least one eligible input?
+        if !tx.input.iter().any(|i| i.script_sig.is_p2pkh() ) {
+            continue //only p2pkh for now
+        }
+
+        // TODO: probably better to directly have a function to extract the pubkeys and continue if there are none
+
+        // We need to extract the tweak data
+        // First we get the outpoints
+        let outpoints: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
+
+        // Then the pubkeys (only p2pkh for now)
+        let input_pubkeys: Vec<PublicKey> = tx.input
+            .iter()
+            .map(|i| {
+                let script = i.script_sig.as_bytes();
+                PublicKey::from_slice(&script[script.len()-33..]).unwrap()
+            })
+            .collect();
+
+        // Now compute the tweak
+        let tweak_data = calculate_tweak_data(&input_pubkeys, &outpoints);
+
+        // and now add it to the batch
+        tweak_rows.push(TweakRow::new(tweak_data.serialize(), height));
     }
     IndexResult {
         funding_rows,
         spending_rows,
         txid_rows,
         header_row: HeaderRow::new(block.header),
+        tweak_rows,
     }
 }

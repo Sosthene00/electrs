@@ -13,6 +13,7 @@ pub(crate) struct WriteBatch {
     pub(crate) funding_rows: Vec<Row>,
     pub(crate) spending_rows: Vec<Row>,
     pub(crate) txid_rows: Vec<Row>,
+    pub(crate) tweak_rows: Vec<Row>,
 }
 
 impl WriteBatch {
@@ -35,8 +36,9 @@ const HEADERS_CF: &str = "headers";
 const TXID_CF: &str = "txid";
 const FUNDING_CF: &str = "funding";
 const SPENDING_CF: &str = "spending";
+const TWEAK_CF: &str = "tweak";
 
-const COLUMN_FAMILIES: &[&str] = &[CONFIG_CF, HEADERS_CF, TXID_CF, FUNDING_CF, SPENDING_CF];
+const COLUMN_FAMILIES: &[&str] = &[CONFIG_CF, HEADERS_CF, TXID_CF, FUNDING_CF, SPENDING_CF, TWEAK_CF];
 
 const CONFIG_KEY: &str = "C";
 const TIP_KEY: &[u8] = b"T";
@@ -215,6 +217,10 @@ impl DBStore {
         self.db.cf_handle(HEADERS_CF).expect("missing HEADERS_CF")
     }
 
+    fn tweak_cf(&self) -> &rocksdb::ColumnFamily {
+        self.db.cf_handle(TWEAK_CF).expect("missing TWEAK_CF")
+    }
+
     pub(crate) fn iter_funding(&self, prefix: Row) -> impl Iterator<Item = Row> + '_ {
         self.iter_prefix_cf(self.funding_cf(), prefix)
     }
@@ -269,6 +275,9 @@ impl DBStore {
         }
         for key in &batch.header_rows {
             db_batch.put_cf(self.headers_cf(), key, b"");
+        }
+        for key in &batch.tweak_rows {
+            db_batch.put_cf(self.tweak_cf(), key, b"");
         }
         db_batch.put_cf(self.headers_cf(), TIP_KEY, &batch.tip_row);
 
