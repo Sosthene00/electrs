@@ -178,28 +178,28 @@ impl Index {
             })
     }
 
-    pub(crate) fn get_tweaks(&self, block_hash: BlockHash) -> impl Iterator<Item = PublicKey> + '_ {
-        if let Some(begin_block) = self.store
-            .read_headers()
-            .into_iter()
-            .find(|row| {
-                let header_row = HeaderRow::from_db_row(&row);
-                header_row.header.block_hash() == block_hash
-            }) 
-            {
-                let tweak_vec: Vec<u8> = HeaderRow::from_db_row(&begin_block).sp_tweaks;
-                let pub_keys: Vec<PublicKey> = tweak_vec.chunks(33)
-                    .filter_map(|chunk| PublicKey::from_slice(chunk).ok())
-                    .collect();
+    // pub(crate) fn get_tweaks(&self, block_hash: BlockHash) -> impl Iterator<Item = PublicKey> + '_ {
+    //     if let Some(begin_block) = self.store
+    //         .read_headers()
+    //         .into_iter()
+    //         .find(|row| {
+    //             let header_row = HeaderRow::from_db_row(&row);
+    //             header_row.header.block_hash() == block_hash
+    //         }) 
+    //         {
+    //             let tweak_vec: Vec<u8> = HeaderRow::from_db_row(&begin_block).sp_tweaks;
+    //             let pub_keys: Vec<PublicKey> = tweak_vec.chunks(33)
+    //                 .filter_map(|chunk| PublicKey::from_slice(chunk).ok())
+    //                 .collect();
 
-                pub_keys.into_iter()
-            }
-        else {
-            let empty_pubkeys: Vec<PublicKey> = vec![];
+    //             pub_keys.into_iter()
+    //         }
+    //     else {
+    //         let empty_pubkeys: Vec<PublicKey> = vec![];
 
-            empty_pubkeys.into_iter()
-        }
-    }
+    //         empty_pubkeys.into_iter()
+    //     }
+    // }
 
     pub(crate) fn filter_by_txid(&self, txid: Txid) -> impl Iterator<Item = BlockHash> + '_ {
         self.store
@@ -368,47 +368,37 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
                 .map(|txin| SpendingPrefixRow::row(txin.previous_output, height)),
         );
 
-        // Do we have at least one eligible input?
-        if !tx.input.iter().any(|i| {
-            let script = &i.script_sig;
-            if script.len() != 106 {
-                debug!("Not p2pkh, lenght {}", script.len());
-                return false;
-            }
-            else if script.as_bytes()[0] != OP_PUSHBYTES_71.to_u8() 
-                || script.as_bytes()[72] != OP_PUSHBYTES_33.to_u8()
-            {
-                debug!("Not the right pushbytes");
-                return false;
-            }
-            else if PublicKey::from_slice(script[106-33..].as_bytes()).is_err() {
-                debug!("Invalid PublicKey");
-                return false;
-            }
-            else { return true; }
-            }) {
-            continue //only p2pkh for now
-        }
-
         // From here it only concerns silent payment
         if !tx.output.iter().any(|o| o.script_pubkey.is_v1_p2tr()) {
             continue // This transaction can't contain silent payment outputs
         }
 
-        // TODO: probably better to directly have a function to extract the pubkeys and continue if there are none
-
-        // We need to extract the tweak data
-        // First we get the outpoints
-        let outpoints: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
-
-        // Then the pubkeys (only p2pkh for now)
+        // Collect all the pubkeys from p2pkh inputs
         let input_pubkeys: Vec<PublicKey> = tx.input
             .iter()
+            .filter(|i| {
+                let script = &i.script_sig;
+                if script.len() != 106 
+                    || script.as_bytes()[0] != OP_PUSHBYTES_71.to_u8() 
+                    || script.as_bytes()[72] != OP_PUSHBYTES_33.to_u8()
+                {
+                    return false;
+                }
+                else { return true; }
+            })
             .map(|i| {
                 let script = i.script_sig.as_bytes();
                 PublicKey::from_slice(&script[script.len()-33..]).unwrap()
             })
             .collect();
+
+        if input_pubkeys.len() == 0 {
+            continue // No eligible pubkey here, can't be sp payment
+        }
+
+        // We need to extract the tweak data
+        // First we get the outpoints
+        let outpoints: Vec<OutPoint> = tx.input.iter().map(|i| i.previous_output).collect();
 
         // Now compute the tweak
         let tweak_data = calculate_tweak_data(&input_pubkeys, &outpoints);
@@ -421,7 +411,8 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
         funding_rows,
         spending_rows,
         txid_rows,
-        header_row: HeaderRow::new(block.header, sp_tweaks),
+        header_row: HeaderRow::new(block.header),
+        // header_row: HeaderRow::new(block.header, sp_tweaks),
         tweak_rows,
     }
 }
