@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bitcoin::{BlockHash, Transaction, Txid};
+use bitcoin::secp256k1::PublicKey;
 
 use crate::{
     cache::Cache,
@@ -113,5 +114,10 @@ impl Tracker {
             }
         })?;
         Ok(result)
+    }
+
+    pub(crate) fn get_tweaks(&self, height: usize) -> Result<Vec<PublicKey>> {
+        let tweaks: Vec<PublicKey> = self.index.get_tweaks_alone(height).collect();
+        Ok(tweaks)
     }
 }
