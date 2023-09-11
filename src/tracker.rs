@@ -118,6 +118,7 @@ impl Tracker {
 
     pub(crate) fn get_tweaks(&self, height: usize) -> Result<Vec<PublicKey>> {
         let tweaks: Vec<PublicKey> = self.index.get_tweaks_alone(height).collect();
+        debug!("{:?}", tweaks);
         Ok(tweaks)
     }
 }

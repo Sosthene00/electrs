@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use bitcoin::opcodes::all::{OP_PUSHBYTES_71, OP_PUSHBYTES_33};
 use std::io::Write;
 use bitcoin::consensus::{deserialize, serialize};
 use bitcoin::hashes::{Hash, sha256};
@@ -56,11 +57,12 @@ impl Stats {
         self.observe_size("write_txid_rows", &batch.txid_rows);
         self.observe_size("write_header_rows", &batch.header_rows);
         debug!(
-            "writing {} funding and {} spending rows from {} transactions, {} blocks",
+            "writing {} funding and {} spending rows from {} transactions, {} blocks, {} sp tweaks",
             batch.funding_rows.len(),
             batch.spending_rows.len(),
             batch.txid_rows.len(),
-            batch.header_rows.len()
+            batch.header_rows.len(),
+            batch.tweak_rows.len()
         );
     }
 
@@ -366,14 +368,31 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
                 .map(|txin| SpendingPrefixRow::row(txin.previous_output, height)),
         );
 
+        // Do we have at least one eligible input?
+        if !tx.input.iter().any(|i| {
+            let script = &i.script_sig;
+            if script.len() != 106 {
+                debug!("Not p2pkh, lenght {}", script.len());
+                return false;
+            }
+            else if script.as_bytes()[0] != OP_PUSHBYTES_71.to_u8() 
+                || script.as_bytes()[72] != OP_PUSHBYTES_33.to_u8()
+            {
+                debug!("Not the right pushbytes");
+                return false;
+            }
+            else if PublicKey::from_slice(script[106-33..].as_bytes()).is_err() {
+                debug!("Invalid PublicKey");
+                return false;
+            }
+            else { return true; }
+            }) {
+            continue //only p2pkh for now
+        }
+
         // From here it only concerns silent payment
         if !tx.output.iter().any(|o| o.script_pubkey.is_v1_p2tr()) {
             continue // This transaction can't contain silent payment outputs
-        }
-
-        // Do we have at least one eligible input?
-        if !tx.input.iter().any(|i| i.script_sig.is_p2pkh() ) {
-            continue //only p2pkh for now
         }
 
         // TODO: probably better to directly have a function to extract the pubkeys and continue if there are none
