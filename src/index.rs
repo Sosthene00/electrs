@@ -1,10 +1,7 @@
 use anyhow::{Context, Result};
-use bitcoin::opcodes::all::{OP_PUSHBYTES_71, OP_PUSHBYTES_33};
-use std::io::Write;
 use bitcoin::consensus::{deserialize, serialize};
-use bitcoin::hashes::{Hash, sha256};
 use bitcoin::{Block, BlockHash, OutPoint, Txid};
-use bitcoin::secp256k1::{Secp256k1, PublicKey, Scalar};
+use bitcoin::secp256k1::PublicKey;
 
 use crate::{
     chain::{Chain, NewHeader},
@@ -13,6 +10,7 @@ use crate::{
     metrics::{self, Gauge, Histogram, Metrics},
     signals::ExitFlag,
     types::{HashPrefixRow, HeaderRow, ScriptHash, ScriptHashRow, SpendingPrefixRow, TxidRow, TweakRow},
+    silentpayment::{take_eligible_pubkeys, calculate_tweak_data}
 };
 
 #[derive(Clone)]
@@ -271,7 +269,7 @@ impl Index {
         daemon.for_blocks(blockhashes, |_blockhash, block| {
             let height = heights.next().expect("unexpected block");
             self.stats.observe_duration("block", || {
-                index_single_block(block, height).extend(&mut batch)
+                index_single_block(daemon, block, height).extend(&mut batch)
             });
             self.stats.height.set("tip", height as f64);
         })?;
@@ -298,53 +296,12 @@ fn db_rows_size(rows: &[Row]) -> usize {
     rows.iter().map(|key| key.len()).sum()
 }
 
-pub fn get_A_sum_public_keys(input: &Vec<PublicKey>) -> PublicKey {
-    let keys_refs: &Vec<&PublicKey> = &input.iter().collect();
-
-    PublicKey::combine_keys(keys_refs).unwrap()
-}
-
-pub fn calculate_tweak_data(
-    input_pub_keys: &Vec<PublicKey>,
-    outpoints: &Vec<OutPoint>,
-) -> PublicKey {
-    let secp = Secp256k1::new();
-    let a_sum = get_A_sum_public_keys(input_pub_keys);
-    let outpoints_hash = hash_outpoints(outpoints);
-
-    a_sum.mul_tweak(&secp, &outpoints_hash).unwrap()
-}
-
-pub fn hash_outpoints(sending_data: &Vec<OutPoint>) -> Scalar {
-    let mut outpoints: Vec<Vec<u8>> = vec![];
-
-    for outpoint in sending_data {
-        let txid = outpoint.txid;
-        let vout = outpoint.vout;
-
-        let mut bytes: Vec<u8> = Vec::new();
-        bytes.extend_from_slice(txid.as_byte_array());
-        bytes.reverse();
-        bytes.extend_from_slice(&vout.to_le_bytes());
-        outpoints.push(bytes);
-    }
-    outpoints.sort();
-
-    let mut engine = sha256::HashEngine::default();
-
-    for v in outpoints {
-        engine.write_all(&v).unwrap();
-    }
-
-    Scalar::from_be_bytes(sha256::Hash::from_engine(engine).to_byte_array()).unwrap()
-}
-
-fn index_single_block(block: Block, height: usize) -> IndexResult {
+fn index_single_block(daemon: &Daemon, block: Block, height: usize) -> IndexResult {
     let mut funding_rows = Vec::with_capacity(block.txdata.iter().map(|tx| tx.output.len()).sum());
     let mut spending_rows = Vec::with_capacity(block.txdata.iter().map(|tx| tx.input.len()).sum());
     let mut txid_rows = Vec::with_capacity(block.txdata.len());
     let mut tweak_rows = Vec::new();
-    let mut sp_tweaks = Vec::new();
+    // let mut sp_tweaks = Vec::new();
 
     for tx in &block.txdata {
         txid_rows.push(TxidRow::row(tx.txid(), height));
@@ -373,24 +330,7 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
             continue // This transaction can't contain silent payment outputs
         }
 
-        // Collect all the pubkeys from p2pkh inputs
-        let input_pubkeys: Vec<PublicKey> = tx.input
-            .iter()
-            .filter(|i| {
-                let script = &i.script_sig;
-                if script.len() != 106 
-                    || script.as_bytes()[0] != OP_PUSHBYTES_71.to_u8() 
-                    || script.as_bytes()[72] != OP_PUSHBYTES_33.to_u8()
-                {
-                    return false;
-                }
-                else { return true; }
-            })
-            .map(|i| {
-                let script = i.script_sig.as_bytes();
-                PublicKey::from_slice(&script[script.len()-33..]).unwrap()
-            })
-            .collect();
+        let input_pubkeys = take_eligible_pubkeys(daemon, &tx.input);
 
         if input_pubkeys.len() == 0 {
             continue // No eligible pubkey here, can't be sp payment
@@ -405,7 +345,7 @@ fn index_single_block(block: Block, height: usize) -> IndexResult {
 
         // and now add it to the batch
         tweak_rows.push(TweakRow::new(tweak_data.serialize(), height));
-        sp_tweaks.extend_from_slice(&tweak_data.serialize());
+        // sp_tweaks.extend_from_slice(&tweak_data.serialize());
     }
     IndexResult {
         funding_rows,

@@ -26,5 +26,6 @@ mod status;
 mod thread;
 mod tracker;
 mod types;
+mod silentpayment;
 
 pub use server::run;
