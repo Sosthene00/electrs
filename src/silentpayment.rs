@@ -98,7 +98,6 @@ fn hash_outpoints(sending_data: &Vec<OutPoint>) -> Scalar {
 
         let mut bytes: Vec<u8> = Vec::new();
         bytes.extend_from_slice(txid.as_byte_array());
-        bytes.reverse();
         bytes.extend_from_slice(&vout.to_le_bytes());
         outpoints.push(bytes);
     }
