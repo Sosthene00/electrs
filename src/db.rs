@@ -38,7 +38,14 @@ const FUNDING_CF: &str = "funding";
 const SPENDING_CF: &str = "spending";
 const TWEAK_CF: &str = "tweak";
 
-const COLUMN_FAMILIES: &[&str] = &[CONFIG_CF, HEADERS_CF, TXID_CF, FUNDING_CF, SPENDING_CF, TWEAK_CF];
+const COLUMN_FAMILIES: &[&str] = &[
+    CONFIG_CF,
+    HEADERS_CF,
+    TXID_CF,
+    FUNDING_CF,
+    SPENDING_CF,
+    TWEAK_CF,
+];
 
 const CONFIG_KEY: &str = "C";
 const TIP_KEY: &[u8] = b"T";

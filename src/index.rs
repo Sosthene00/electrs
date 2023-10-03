@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use bitcoin::consensus::{deserialize, serialize};
-use bitcoin::{Block, BlockHash, OutPoint, Txid};
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::{Block, BlockHash, OutPoint, Txid};
 
 use crate::{
     chain::{Chain, NewHeader},
@@ -9,8 +9,10 @@ use crate::{
     db::{DBStore, Row, WriteBatch},
     metrics::{self, Gauge, Histogram, Metrics},
     signals::ExitFlag,
-    types::{HashPrefixRow, HeaderRow, ScriptHash, ScriptHashRow, SpendingPrefixRow, TxidRow, TweakRow},
-    silentpayment::{take_eligible_pubkeys, calculate_tweak_data}
+    silentpayment::{calculate_tweak_data, take_eligible_pubkeys},
+    types::{
+        HashPrefixRow, HeaderRow, ScriptHash, ScriptHashRow, SpendingPrefixRow, TweakRow, TxidRow,
+    },
 };
 
 #[derive(Clone)]
@@ -100,7 +102,6 @@ impl IndexResult {
 
         let tweak_rows = self.tweak_rows.iter().map(TweakRow::to_db_row);
         batch.tweak_rows.extend(tweak_rows);
-
     }
 }
 
@@ -162,7 +163,10 @@ impl Index {
         Ok(result)
     }
 
-    pub(crate) fn get_tweaks_alone_single_block(&self, height: usize) -> impl Iterator<Item = PublicKey> + '_ {
+    pub(crate) fn get_tweaks_alone_single_block(
+        &self,
+        height: usize,
+    ) -> impl Iterator<Item = PublicKey> + '_ {
         self.store
             .read_tweaks()
             .into_iter()
@@ -176,7 +180,10 @@ impl Index {
             })
     }
 
-    pub(crate) fn get_tweaks_alone(&self, height: usize) -> impl Iterator<Item = (u32, PublicKey)> + '_ {
+    pub(crate) fn get_tweaks_alone(
+        &self,
+        height: usize,
+    ) -> impl Iterator<Item = (u32, PublicKey)> + '_ {
         self.store
             .read_tweaks()
             .into_iter()
@@ -198,7 +205,7 @@ impl Index {
     //         .find(|row| {
     //             let header_row = HeaderRow::from_db_row(&row);
     //             header_row.header.block_hash() == block_hash
-    //         }) 
+    //         })
     //         {
     //             let tweak_vec: Vec<u8> = HeaderRow::from_db_row(&begin_block).sp_tweaks;
     //             let pub_keys: Vec<PublicKey> = tweak_vec.chunks(33)
@@ -342,13 +349,13 @@ fn index_single_block(daemon: &Daemon, block: Block, height: usize) -> IndexResu
 
         // From here it only concerns silent payment
         if !tx.output.iter().any(|o| o.script_pubkey.is_v1_p2tr()) {
-            continue // This transaction can't contain silent payment outputs
+            continue; // This transaction can't contain silent payment outputs
         }
 
         let input_pubkeys = take_eligible_pubkeys(daemon, &tx.input);
 
         if input_pubkeys.len() == 0 {
-            continue // No eligible pubkey here, can't be sp payment
+            continue; // No eligible pubkey here, can't be sp payment
         }
 
         // We need to extract the tweak data

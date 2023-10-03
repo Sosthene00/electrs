@@ -1,6 +1,6 @@
 use anyhow::Result;
-use bitcoin::BlockHash;
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
+use bitcoin::BlockHash;
 
 use std::convert::TryFrom;
 
@@ -46,7 +46,7 @@ pub(crate) struct TweakRow {
 }
 
 impl TweakRow {
-    pub(crate) fn new(tweak_data: [u8;PUBLIC_KEY_SIZE], height: usize) -> Self {
+    pub(crate) fn new(tweak_data: [u8; PUBLIC_KEY_SIZE], height: usize) -> Self {
         Self {
             tweak_data,
             height: Height::try_from(height).expect("invalid height"),
@@ -195,7 +195,7 @@ impl_consensus_encoding!(HeaderRow, header);
 
 impl HeaderRow {
     pub(crate) fn new(header: BlockHeader) -> Self {
-    // pub(crate) fn new(header: BlockHeader, sp_tweaks: Vec<u8>) -> Self {
+        // pub(crate) fn new(header: BlockHeader, sp_tweaks: Vec<u8>) -> Self {
         Self { header }
         // Self { header, sp_tweaks }
     }

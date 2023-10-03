@@ -235,11 +235,11 @@ impl Rpc {
         Ok(json!({"count": count, "hex": String::from_iter(hex_headers), "max": max_count}))
     }
 
-    fn sp_tweaks(&self, (start_height, ): (usize,)) -> Result<Value> {
+    fn sp_tweaks(&self, (start_height,): (usize,)) -> Result<Value> {
         Ok(json!(self.tracker.get_tweaks(start_height)?))
     }
 
-    fn sp_tweaks_single_block(&self, (start_height, ): (usize,)) -> Result<Value> {
+    fn sp_tweaks_single_block(&self, (start_height,): (usize,)) -> Result<Value> {
         Ok(json!(self.tracker.get_tweaks_single_block(start_height)?))
     }
 

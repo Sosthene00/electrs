@@ -1,42 +1,41 @@
+use bitcoin::hashes::{sha256, Hash};
+use bitcoin::opcodes::all::{OP_PUSHBYTES_16, OP_PUSHBYTES_33, OP_PUSHBYTES_71};
+use bitcoin::secp256k1::{PublicKey, Scalar, Secp256k1, XOnlyPublicKey};
+use bitcoin::{OutPoint, Script, TxIn};
 use std::io::Write;
-use bitcoin::opcodes::all::{OP_PUSHBYTES_71, OP_PUSHBYTES_33, OP_PUSHBYTES_16};
-use bitcoin::hashes::{Hash, sha256};
-use bitcoin::secp256k1::{Secp256k1, PublicKey, Scalar, XOnlyPublicKey};
-use bitcoin::{OutPoint, TxIn, Script};
 
 use crate::daemon::Daemon;
 
-const NUMS_KEY: &[u8] = "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0".as_bytes();
+const NUMS_KEY: &[u8] =
+    "50929b74c1a04954b78b4b6035e97a5e078a5a0f28ec96d547bfee9ace803ac0".as_bytes();
 
 fn is_p2pkh(input: &TxIn) -> bool {
     let script = input.script_sig.as_bytes();
-    input.script_sig.len() == 106 
-        && script[0] == OP_PUSHBYTES_71.to_u8() 
+    input.script_sig.len() == 106
+        && script[0] == OP_PUSHBYTES_71.to_u8()
         && script[72] == OP_PUSHBYTES_33.to_u8()
-        && PublicKey::from_slice(&script[106-33..]).is_ok()
+        && PublicKey::from_slice(&script[106 - 33..]).is_ok()
 }
 
 fn is_p2wpkh(input: &TxIn) -> bool {
-    input.script_sig.is_empty() 
+    input.script_sig.is_empty()
         && input.witness.len() == 2
         && PublicKey::from_slice(input.witness.last().unwrap()).is_ok()
 }
 
 fn is_p2sh_p2wpkh(input: &TxIn) -> bool {
     if let Some((push, program)) = input.script_sig.as_bytes().split_first() {
-        *push == OP_PUSHBYTES_16.to_u8() 
-            && Script::from_bytes(program).is_v0_p2wpkh()
+        *push == OP_PUSHBYTES_16.to_u8() && Script::from_bytes(program).is_v0_p2wpkh()
     } else {
         false
     }
 }
 
 fn is_p2tr(input: &TxIn) -> bool {
-    input.script_sig.is_empty() 
+    input.script_sig.is_empty()
         && !input.witness.is_empty()
-        && (input.witness.len() == 1 
-            || XOnlyPublicKey::from_slice(input.witness.last().unwrap()).is_ok()
-        )
+        && (input.witness.len() == 1
+            || XOnlyPublicKey::from_slice(input.witness.last().unwrap()).is_ok())
 }
 
 pub(crate) fn take_eligible_pubkeys(daemon: &Daemon, tx_inputs: &Vec<TxIn>) -> Vec<PublicKey> {
@@ -45,7 +44,7 @@ pub(crate) fn take_eligible_pubkeys(daemon: &Daemon, tx_inputs: &Vec<TxIn>) -> V
     for i in tx_inputs {
         if is_p2pkh(i) {
             let script = i.script_sig.as_bytes();
-            input_pubkeys.push(PublicKey::from_slice(&script[script.len()-33..]).unwrap());
+            input_pubkeys.push(PublicKey::from_slice(&script[script.len() - 33..]).unwrap());
         } else if is_p2wpkh(i) {
             input_pubkeys.push(PublicKey::from_slice(i.witness.last().unwrap()).unwrap());
         } else if is_p2sh_p2wpkh(i) {
@@ -62,7 +61,10 @@ pub(crate) fn take_eligible_pubkeys(daemon: &Daemon, tx_inputs: &Vec<TxIn>) -> V
                 let txout = prev_tx.output.get(vout as usize).unwrap();
                 let spk = &txout.script_pubkey.as_bytes();
                 let xonly_pubkey = XOnlyPublicKey::from_slice(&spk[2..]).unwrap();
-                input_pubkeys.push(PublicKey::from_x_only_public_key(xonly_pubkey, bitcoin::secp256k1::Parity::Even));
+                input_pubkeys.push(PublicKey::from_x_only_public_key(
+                    xonly_pubkey,
+                    bitcoin::secp256k1::Parity::Even,
+                ));
             } else {
                 panic!("Can't find prevout tx for {}", txid);
             }
