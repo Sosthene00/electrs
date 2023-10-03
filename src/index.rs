@@ -162,7 +162,21 @@ impl Index {
         Ok(result)
     }
 
-    pub(crate) fn get_tweaks_alone(&self, height: usize) -> impl Iterator<Item = PublicKey> + '_ {
+    pub(crate) fn get_tweaks_alone_single_block(&self, height: usize) -> impl Iterator<Item = PublicKey> + '_ {
+        self.store
+            .read_tweaks()
+            .into_iter()
+            .filter(move |t| {
+                let tweak_height = TweakRow::from_db_row(&t).height;
+                tweak_height == height as u32
+            })
+            .map(|row| {
+                let tweak = TweakRow::from_db_row(&row).tweak_data;
+                PublicKey::from_slice(&tweak).unwrap()
+            })
+    }
+
+    pub(crate) fn get_tweaks_alone(&self, height: usize) -> impl Iterator<Item = (u32, PublicKey)> + '_ {
         self.store
             .read_tweaks()
             .into_iter()
@@ -172,7 +186,8 @@ impl Index {
             })
             .map(|row| {
                 let tweak = TweakRow::from_db_row(&row).tweak_data;
-                PublicKey::from_slice(&tweak).unwrap()
+                let height = TweakRow::from_db_row(&row).height;
+                (height, PublicKey::from_slice(&tweak).unwrap())
             })
     }
 

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use bitcoin::{BlockHash, Transaction, Txid};
 use bitcoin::secp256k1::PublicKey;
@@ -116,9 +118,19 @@ impl Tracker {
         Ok(result)
     }
 
-    pub(crate) fn get_tweaks(&self, height: usize) -> Result<Vec<PublicKey>> {
-        let tweaks: Vec<PublicKey> = self.index.get_tweaks_alone(height).collect();
+    pub(crate) fn get_tweaks_single_block(&self, height: usize) -> Result<Vec<PublicKey>> {
+        let tweaks: Vec<PublicKey> = self.index.get_tweaks_alone_single_block(height).collect();
         debug!("{:?}", tweaks);
         Ok(tweaks)
+    }
+
+    pub(crate) fn get_tweaks(&self, height: usize) -> Result<HashMap<u32,Vec<PublicKey>>> {
+        let tweaks: Vec<(u32, PublicKey)> = self.index.get_tweaks_alone(height).collect();
+        let mut res: HashMap<u32, Vec<PublicKey>> = HashMap::new();
+        for tweak in tweaks {
+            res.entry(tweak.0).or_insert_with(Vec::new).push(tweak.1)
+        }
+        // debug!("{:?}", tweaks);
+        Ok(res)
     }
 }

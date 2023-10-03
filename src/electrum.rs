@@ -239,6 +239,10 @@ impl Rpc {
         Ok(json!(self.tracker.get_tweaks(start_height)?))
     }
 
+    fn sp_tweaks_single_block(&self, (start_height, ): (usize,)) -> Result<Value> {
+        Ok(json!(self.tracker.get_tweaks_single_block(start_height)?))
+    }
+
     fn estimate_fee(&self, (nblocks,): (u16,)) -> Result<Value> {
         Ok(self
             .daemon
@@ -548,6 +552,7 @@ impl Rpc {
                 Params::BlockHeader(args) => self.block_header(*args),
                 Params::BlockHeaders(args) => self.block_headers(*args),
                 Params::SpTweaks(args) => self.sp_tweaks(*args),
+                Params::SpTweaksSingleBlock(args) => self.sp_tweaks_single_block(*args),
                 Params::Donation => Ok(Value::Null),
                 Params::EstimateFee(args) => self.estimate_fee(*args),
                 Params::Features => self.features(),
@@ -578,6 +583,7 @@ enum Params {
     BlockHeader((usize,)),
     BlockHeaders((usize, usize)),
     SpTweaks((usize,)),
+    SpTweaksSingleBlock((usize,)),
     TransactionBroadcast((String,)),
     Donation,
     EstimateFee((u16,)),
@@ -604,6 +610,7 @@ impl Params {
             "blockchain.block.header" => Params::BlockHeader(convert(params)?),
             "blockchain.block.headers" => Params::BlockHeaders(convert(params)?),
             "blockchain.block.tweaks" => Params::SpTweaks(convert(params)?),
+            "blockchain.block.tweakssingleblock" => Params::SpTweaksSingleBlock(convert(params)?),
             "blockchain.estimatefee" => Params::EstimateFee(convert(params)?),
             "blockchain.headers.subscribe" => Params::HeadersSubscribe,
             "blockchain.relayfee" => Params::RelayFee,
