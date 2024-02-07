@@ -1,7 +1,10 @@
 use anyhow::{Context, Result};
 use bitcoin::consensus::{deserialize, serialize, Decodable};
+use bitcoin::secp256k1::PublicKey;
 use bitcoin::{BlockHash, OutPoint, Txid};
 use bitcoin_slices::{bsl, Visit, Visitor};
+use silentpayments::utils::receiving::recipient_calculate_tweak_data;
+use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use crate::{
@@ -165,16 +168,38 @@ impl Index {
             .filter_map(move |height| self.chain.get_block_hash(height))
     }
 
-    // Return `Ok(true)` when the chain is fully synced and the index is compacted.
-    pub(crate) fn sync(&mut self, daemon: &Daemon, exit_flag: &ExitFlag) -> Result<bool> {
-        let new_headers = self
-            .stats
-            .observe_duration("headers", || daemon.get_new_headers(&self.chain))?;
+    pub(crate) fn silent_payments_sync(
+        &mut self,
+        daemon: &Daemon,
+        exit_flag: &ExitFlag,
+    ) -> Result<bool> {
+        let mut new_headers: Vec<NewHeader> = Vec::with_capacity(2000);
+        let start: usize;
+        if let Some(row) = self.store.last_sp() {
+            let blockhash: BlockHash = deserialize(&row).expect("invalid block_hash");
+            start = self.chain.get_block_height(&blockhash).expect("Can't find block_hash") + 1;
+        } else {
+            start = 70_000;
+        }
+        let end = if start + 2000 < self.chain.height() {
+            start + 2000
+        } else {
+            self.chain.height()
+        };
+        for block_height in start..end {
+            new_headers.push(NewHeader::from((
+                *self
+                    .chain
+                    .get_block_header(block_height)
+                    .expect("Unexpected missing block header"),
+                block_height,
+            )));
+        }
         match (new_headers.first(), new_headers.last()) {
             (Some(first), Some(last)) => {
                 let count = new_headers.len();
                 info!(
-                    "indexing {} blocks: [{}..{}]",
+                    "Looking for sp tweaks in {} blocks: [{}..{}]",
                     count,
                     first.height(),
                     last.height()
@@ -196,7 +221,39 @@ impl Index {
                     chunk.first().unwrap().height()
                 )
             })?;
-            self.sync_blocks(daemon, chunk)?;
+            self.sync_blocks(daemon, chunk, true)?;
+        }
+        self.flush_needed = true;
+        Ok(false) // sync is not done
+    }
+
+    // Return `Ok(true)` when the chain is fully synced and the index is compacted.
+    pub(crate) fn sync(&mut self, daemon: &Daemon, exit_flag: &ExitFlag) -> Result<bool> {
+        let new_headers = self
+            .stats
+            .observe_duration("headers", || daemon.get_new_headers(&self.chain))?;
+        match (new_headers.first(), new_headers.last()) {
+            (Some(first), Some(last)) => {
+                let count = new_headers.len();
+                info!(
+                    "indexing {} blocks: [{}..{}]",
+                    count,
+                    first.height(),
+                    last.height()
+                );
+            }
+            _ => {
+                return Ok(true); // no more blocks to index (done for now)
+            }
+        }
+        for chunk in new_headers.chunks(self.batch_size) {
+            exit_flag.poll().with_context(|| {
+                format!(
+                    "indexing interrupted at height: {}",
+                    chunk.first().unwrap().height()
+                )
+            })?;
+            self.sync_blocks(daemon, chunk, false)?;
         }
         self.chain.update(new_headers);
         self.stats.observe_chain(&self.chain);
@@ -204,19 +261,40 @@ impl Index {
         Ok(false) // sync is not done
     }
 
-    fn sync_blocks(&mut self, daemon: &Daemon, chunk: &[NewHeader]) -> Result<()> {
+    fn sync_blocks(&mut self, daemon: &Daemon, chunk: &[NewHeader], sp: bool) -> Result<()> {
         let blockhashes: Vec<BlockHash> = chunk.iter().map(|h| h.hash()).collect();
         let mut heights = chunk.iter().map(|h| h.height());
 
         let mut batch = WriteBatch::default();
 
-        daemon.for_blocks(blockhashes, |blockhash, block| {
-            let height = heights.next().expect("unexpected block");
-            self.stats.observe_duration("block", || {
-                index_single_block(blockhash, block, height, &mut batch);
-            });
-            self.stats.height.set("tip", height as f64);
-        })?;
+        if !sp {
+            let scan_block = |blockhash, block| {
+                let height = heights.next().expect("unexpected block");
+                self.stats.observe_duration("block", || {
+                    index_single_block(blockhash, block, height, &mut batch);
+                });
+                self.stats.height.set("tip", height as f64);
+            };
+
+            daemon.for_blocks(blockhashes, scan_block)?;
+        } else {
+            let scan_block_for_sp = |blockhash, block| {
+                let height = heights.next().expect("unexpected block");
+                self.stats.observe_duration("block_sp", || {
+                    scan_single_block_for_silent_payments(
+                        self,
+                        daemon,
+                        blockhash,
+                        block,
+                        &mut batch,
+                    );
+                });
+                self.stats.height.set("sp", height as f64);
+            };
+
+            daemon.for_blocks(blockhashes, scan_block_for_sp)?;
+        }
+
         let heights: Vec<_> = heights.collect();
         assert!(
             heights.is_empty(),
@@ -293,4 +371,119 @@ fn index_single_block(
     let mut index_block = IndexBlockVisitor { batch, height };
     bsl::Block::visit(&block, &mut index_block).expect("core returned invalid block");
     batch.tip_row = serialize(&block_hash).into_boxed_slice();
+}
+
+fn scan_single_block_for_silent_payments(
+    index: &Index,
+    daemon: &Daemon,
+    block_hash: BlockHash,
+    block: SerBlock,
+    batch: &mut WriteBatch,
+) {
+    struct IndexBlockVisitor<'a> {
+        daemon: &'a Daemon,
+        index: &'a Index,
+        map: &'a mut HashMap<BlockHash, Vec<u8>>,
+    }
+
+    impl<'a> Visitor for IndexBlockVisitor<'a> {
+        fn visit_transaction(&mut self, tx: &bsl::Transaction) -> core::ops::ControlFlow<()> {
+            let parsed_tx: bitcoin::Transaction = match deserialize(tx.as_ref()) {
+                Ok(tx) => tx,
+                Err(_) => panic!("Unexpected invalid transaction"),
+            };
+
+            if parsed_tx.is_coinbase() { return ControlFlow::Continue(()) };
+
+            let txid = bsl_txid(tx);
+
+            let mut to_scan = false;
+            for (i, o) in parsed_tx.output.iter().enumerate() {
+                if o.script_pubkey.is_p2tr() {
+                    let outpoint = OutPoint {
+                        txid,
+                        vout: i.try_into().expect("Unexpectedly high vout"),
+                    };
+                    if self
+                        .index
+                        .store
+                        .iter_spending(SpendingPrefixRow::scan_prefix(outpoint))
+                        .next()
+                        .is_none()
+                    {
+                        to_scan = true;
+                        break; // Stop iterating once a relevant P2TR output is found
+                    }
+                }
+            }
+
+            if !to_scan {
+                return ControlFlow::Continue(());
+            }
+
+            // Iterate over inputs
+            let mut pubkeys: Vec<PublicKey> = Vec::with_capacity(parsed_tx.input.len());
+            let mut outpoints: Vec<(String, u32)> = Vec::with_capacity(parsed_tx.input.len());
+            for i in parsed_tx.input.iter() {
+                // get the prevout script pubkey
+                outpoints.push((i.previous_output.txid.to_string(), i.previous_output.vout));
+                let prev_tx: bitcoin::Transaction = self
+                    .daemon
+                    .get_transaction(&i.previous_output.txid, None)
+                    .expect("Spending non existent UTXO");
+                let index: usize = i
+                    .previous_output
+                    .vout
+                    .try_into()
+                    .expect("Unexpectedly high vout");
+                let prevout: &bitcoin::TxOut = prev_tx
+                    .output
+                    .get(index)
+                    .expect("Spending a non existent UTXO");
+                match crate::sp::get_pubkey_from_input(&crate::sp::VinData {
+                    script_sig: i.script_sig.to_bytes(),
+                    txinwitness: i.witness.to_vec(),
+                    script_pub_key: prevout.script_pubkey.to_bytes(),
+                }) {
+                    Ok(Some(pubkey)) => pubkeys.push(pubkey),
+                    Ok(None) => (),
+                    Err(_) => panic!("Scanning for public keys failed for tx: {}", txid),
+                }
+            }
+
+            let pubkeys_ref: Vec<&PublicKey> = pubkeys.iter().collect();
+
+            if !pubkeys_ref.is_empty() {
+                let tweak = recipient_calculate_tweak_data(&pubkeys_ref, &outpoints).expect("Unexpected invalid transaction");
+
+                // check in which block is this transaction
+                if let Some(block_hash) = self.index.filter_by_txid(txid).next() {
+                    if let Some(value) = self.map.get_mut(&block_hash) {
+                        value.extend(&tweak.serialize());
+                    } else {
+                        self.map.insert(block_hash, Vec::from_iter(tweak.serialize())); 
+                    }
+                } else {
+                    panic!("Unexpected unknown transaction");
+                }
+            }
+
+            ControlFlow::Continue(())
+        }
+    }
+
+    let mut map: HashMap<BlockHash, Vec<u8>> = HashMap::with_capacity(index.batch_size);
+    let mut index_block = IndexBlockVisitor {
+        daemon,
+        index,
+        map: &mut map
+    };
+    bsl::Block::visit(&block, &mut index_block).expect("core returned invalid block");
+    for (hash, tweaks) in map {
+        let height = index.chain.get_block_height(&hash).expect("Unexpected non existing blockhash");
+        let mut value: Vec<u8> = u64::try_from(height).expect("Unexpected invalid usize").to_be_bytes().to_vec();
+        value.extend(tweaks.iter());
+        batch.tweak_rows.push(value.into_boxed_slice());
+    }
+    batch.sp_tip_row = serialize(&block_hash).into_boxed_slice();
 }

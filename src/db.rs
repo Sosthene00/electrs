@@ -9,10 +9,12 @@ pub(crate) type Row = Box<[u8]>;
 #[derive(Default)]
 pub(crate) struct WriteBatch {
     pub(crate) tip_row: Row,
+    pub(crate) sp_tip_row: Row,
     pub(crate) header_rows: Vec<Row>,
     pub(crate) funding_rows: Vec<Row>,
     pub(crate) spending_rows: Vec<Row>,
     pub(crate) txid_rows: Vec<Row>,
+    pub(crate) tweak_rows: Vec<Row>,
 }
 
 impl WriteBatch {
@@ -21,6 +23,7 @@ impl WriteBatch {
         self.funding_rows.sort_unstable();
         self.spending_rows.sort_unstable();
         self.txid_rows.sort_unstable();
+        self.tweak_rows.sort_unstable();
     }
 }
 
@@ -35,11 +38,20 @@ const HEADERS_CF: &str = "headers";
 const TXID_CF: &str = "txid";
 const FUNDING_CF: &str = "funding";
 const SPENDING_CF: &str = "spending";
+const TWEAK_CF: &str = "tweak";
 
-const COLUMN_FAMILIES: &[&str] = &[CONFIG_CF, HEADERS_CF, TXID_CF, FUNDING_CF, SPENDING_CF];
+const COLUMN_FAMILIES: &[&str] = &[
+    CONFIG_CF,
+    HEADERS_CF,
+    TXID_CF,
+    FUNDING_CF,
+    SPENDING_CF,
+    TWEAK_CF,
+];
 
 const CONFIG_KEY: &str = "C";
 const TIP_KEY: &[u8] = b"T";
+const SP_KEY: &[u8] = b"SP";
 
 // Taken from https://github.com/facebook/rocksdb/blob/master/include/rocksdb/db.h#L654-L689
 const DB_PROPERIES: &[&str] = &[
@@ -218,6 +230,10 @@ impl DBStore {
         self.db.cf_handle(HEADERS_CF).expect("missing HEADERS_CF")
     }
 
+    fn tweak_cf(&self) -> &rocksdb::ColumnFamily {
+        self.db.cf_handle(TWEAK_CF).expect("missing TWEAK_CF")
+    }
+
     pub(crate) fn iter_funding(&self, prefix: Row) -> impl Iterator<Item = Row> + '_ {
         self.iter_prefix_cf(self.funding_cf(), prefix)
     }
@@ -250,6 +266,7 @@ impl DBStore {
             .iterator_cf_opt(self.headers_cf(), opts, rocksdb::IteratorMode::Start)
             .map(|row| row.expect("header iterator failed").0) // extract key from row
             .filter(|key| &key[..] != TIP_KEY) // headers' rows are longer than TIP_KEY
+            .filter(|key| &key[..] != SP_KEY) // headers' rows are longer than SP_KEY
             .collect()
     }
 
@@ -257,6 +274,12 @@ impl DBStore {
         self.db
             .get_cf(self.headers_cf(), TIP_KEY)
             .expect("get_tip failed")
+    }
+
+    pub(crate) fn last_sp(&self) -> Option<Vec<u8>> {
+        self.db
+            .get_cf(self.headers_cf(), SP_KEY)
+            .expect("last_sp failed")
     }
 
     pub(crate) fn write(&self, batch: &WriteBatch) {
@@ -273,7 +296,19 @@ impl DBStore {
         for key in &batch.header_rows {
             db_batch.put_cf(self.headers_cf(), key, b"");
         }
-        db_batch.put_cf(self.headers_cf(), TIP_KEY, &batch.tip_row);
+        if !batch.tip_row.is_empty() {
+            db_batch.put_cf(self.headers_cf(), TIP_KEY, &batch.tip_row);
+        }
+
+        // Only for silent payments tweak sync
+        for key in &batch.tweak_rows {
+            if key.len() > 8 {
+                db_batch.put_cf(self.tweak_cf(), &key[..8], &key[8..]);
+            }
+        }
+        if !batch.sp_tip_row.is_empty() {
+            db_batch.put_cf(self.headers_cf(), SP_KEY, &batch.sp_tip_row);
+        }
 
         let mut opts = rocksdb::WriteOptions::new();
         let bulk_import = self.bulk_import.load(Ordering::Relaxed);
