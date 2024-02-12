@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bitcoin::consensus::{deserialize, serialize, Decodable};
+use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{BlockHash, OutPoint, Txid};
 use bitcoin_slices::{bsl, Visit, Visitor};
@@ -168,6 +169,25 @@ impl Index {
             .filter_map(move |height| self.chain.get_block_hash(height))
     }
 
+    pub(crate) fn get_tweaks(&self, height: u64) -> impl Iterator<Item = (u64, Vec<String>)> + '_ {
+        self.store
+            .read_tweaks(height)
+            .into_iter()
+            .filter_map(move |(block_height, tweaks)| {
+                assert!(tweaks.len() % 33 == 0 && tweaks.len() > 0);
+                assert!(block_height.len() == 8);
+
+                let tweak_row_block_height =
+                    u64::from_be_bytes(block_height[..].try_into().unwrap());
+                let pks = tweaks
+                    .chunks(33)
+                    .map(|x| format!("{}", x.as_hex()))
+                    .collect();
+
+                Some((tweak_row_block_height, pks))
+            })
+    }
+
     pub(crate) fn silent_payments_sync(
         &mut self,
         daemon: &Daemon,
@@ -177,7 +197,11 @@ impl Index {
         let start: usize;
         if let Some(row) = self.store.last_sp() {
             let blockhash: BlockHash = deserialize(&row).expect("invalid block_hash");
-            start = self.chain.get_block_height(&blockhash).expect("Can't find block_hash") + 1;
+            start = self
+                .chain
+                .get_block_height(&blockhash)
+                .expect("Can't find block_hash")
+                + 1;
         } else {
             start = 70_000;
         }
@@ -282,11 +306,7 @@ impl Index {
                 let height = heights.next().expect("unexpected block");
                 self.stats.observe_duration("block_sp", || {
                     scan_single_block_for_silent_payments(
-                        self,
-                        daemon,
-                        blockhash,
-                        block,
-                        &mut batch,
+                        self, daemon, blockhash, block, &mut batch,
                     );
                 });
                 self.stats.height.set("sp", height as f64);
@@ -393,7 +413,9 @@ fn scan_single_block_for_silent_payments(
                 Err(_) => panic!("Unexpected invalid transaction"),
             };
 
-            if parsed_tx.is_coinbase() { return ControlFlow::Continue(()) };
+            if parsed_tx.is_coinbase() {
+                return ControlFlow::Continue(());
+            };
 
             let txid = bsl_txid(tx);
 
@@ -454,14 +476,16 @@ fn scan_single_block_for_silent_payments(
             let pubkeys_ref: Vec<&PublicKey> = pubkeys.iter().collect();
 
             if !pubkeys_ref.is_empty() {
-                let tweak = recipient_calculate_tweak_data(&pubkeys_ref, &outpoints).expect("Unexpected invalid transaction");
+                let tweak = recipient_calculate_tweak_data(&pubkeys_ref, &outpoints)
+                    .expect("Unexpected invalid transaction");
 
                 // check in which block is this transaction
                 if let Some(block_hash) = self.index.filter_by_txid(txid).next() {
                     if let Some(value) = self.map.get_mut(&block_hash) {
                         value.extend(&tweak.serialize());
                     } else {
-                        self.map.insert(block_hash, Vec::from_iter(tweak.serialize())); 
+                        self.map
+                            .insert(block_hash, Vec::from_iter(tweak.serialize()));
                     }
                 } else {
                     panic!("Unexpected unknown transaction");
@@ -476,12 +500,18 @@ fn scan_single_block_for_silent_payments(
     let mut index_block = IndexBlockVisitor {
         daemon,
         index,
-        map: &mut map
+        map: &mut map,
     };
     bsl::Block::visit(&block, &mut index_block).expect("core returned invalid block");
     for (hash, tweaks) in map {
-        let height = index.chain.get_block_height(&hash).expect("Unexpected non existing blockhash");
-        let mut value: Vec<u8> = u64::try_from(height).expect("Unexpected invalid usize").to_be_bytes().to_vec();
+        let height = index
+            .chain
+            .get_block_height(&hash)
+            .expect("Unexpected non existing blockhash");
+        let mut value: Vec<u8> = u64::try_from(height)
+            .expect("Unexpected invalid usize")
+            .to_be_bytes()
+            .to_vec();
         value.extend(tweaks.iter());
         batch.tweak_rows.push(value.into_boxed_slice());
     }

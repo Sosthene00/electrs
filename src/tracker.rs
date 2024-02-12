@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, Result};
 use bitcoin::{BlockHash, Transaction, Txid};
 use bitcoin_slices::{
@@ -124,5 +126,14 @@ impl Tracker {
             };
         })?;
         Ok(result)
+    }
+
+    pub(crate) fn get_tweaks(&self, height: usize) -> Result<HashMap<u64, Vec<String>>> {
+        let tweaks: Vec<(u64, Vec<String>)> = self.index.get_tweaks(height as u64).collect();
+        let mut res: HashMap<u64, Vec<String>> = HashMap::new();
+        for (height, tweaks) in tweaks {
+            res.entry(height).or_insert_with(Vec::new).extend(tweaks)
+        }
+        Ok(res)
     }
 }
