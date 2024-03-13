@@ -4,6 +4,7 @@ use bitcoin::hex::DisplayHex;
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{BlockHash, OutPoint, Txid};
 use bitcoin_slices::{bsl, Visit, Visitor};
+use silentpayments::utils::get_pubkey_from_input;
 use silentpayments::utils::receiving::recipient_calculate_tweak_data;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -462,11 +463,11 @@ fn scan_single_block_for_silent_payments(
                     .output
                     .get(index)
                     .expect("Spending a non existent UTXO");
-                match crate::sp::get_pubkey_from_input(&crate::sp::VinData {
-                    script_sig: i.script_sig.to_bytes(),
-                    txinwitness: i.witness.to_vec(),
-                    script_pub_key: prevout.script_pubkey.to_bytes(),
-                }) {
+                match get_pubkey_from_input(
+                    &i.script_sig.to_bytes(),
+                    &i.witness.to_vec(),
+                    &prevout.script_pubkey.to_bytes(),
+                ) {
                     Ok(Some(pubkey)) => pubkeys.push(pubkey),
                     Ok(None) => (),
                     Err(_) => panic!("Scanning for public keys failed for tx: {}", txid),
